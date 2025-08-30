@@ -1,4 +1,4 @@
-use clap::{Command, Parser};
+use clap::{Arg, Command, Parser};
 use std::os::unix::process::CommandExt;
 use std::process::Command as ProcCommand;
 
@@ -98,6 +98,12 @@ fn main() -> anyhow::Result<()> {
         if let Some(desc) = &mapping.description {
             subcmd = subcmd.about(desc);
         }
+         subcmd = subcmd.arg(
+            Arg::new("args")
+                .num_args(0..)
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true)
+        ).disable_help_flag(true);
         cmd = cmd.subcommand(subcmd);
     }
 
@@ -105,9 +111,15 @@ fn main() -> anyhow::Result<()> {
     args.insert(0, cli.name);
 
     let matches = cmd.clone().get_matches_from(args);
-    if let Some((sub_name, _sub_matches)) = matches.subcommand() {
+    if let Some((sub_name, sub_matches)) = matches.subcommand() {
         if let Some(mapping) = cli.command.iter().find(|m| m.name == sub_name) {
-            let error = ProcCommand::new(&mapping.path).exec();
+          let sub_args: Vec<String> = sub_matches
+                .get_many::<String>("args")
+                .unwrap_or_default()
+                .map(|s| s.clone())
+                .collect();
+
+            let error = ProcCommand::new(&mapping.path).args(sub_args).exec();
             return Err(error.into());
         }
     } else {
