@@ -104,12 +104,14 @@ fn main() -> anyhow::Result<()> {
     let mut args = cli.trailing;
     args.insert(0, cli.name);
 
-    let matches = cmd.get_matches_from(args);
+    let matches = cmd.clone().get_matches_from(args);
     if let Some((sub_name, _sub_matches)) = matches.subcommand() {
         if let Some(mapping) = cli.command.iter().find(|m| m.name == sub_name) {
             let error = ProcCommand::new(&mapping.path).exec();
             return Err(error.into());
         }
+    } else {
+        cmd.print_help()?;
     }
     Ok(())
 }
