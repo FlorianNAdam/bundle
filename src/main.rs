@@ -1,190 +1,115 @@
-use resolve_path::PathResolveExt;
+use clap::{Command, Parser};
+use std::os::unix::process::CommandExt;
+use std::process::Command as ProcCommand;
 
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
-
-use clap::{Parser, Subcommand};
-
-#[derive(Parser)]
-#[command(name = "ni")]
-#[command(about = "A small nix convenience wrapper", long_about = None)]
+/// A small CLI tool to bundle subcommands
+#[derive(Parser, Debug)]
+#[command(author, about, long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
+    #[arg(
+        short, 
+        long, 
+        value_parser = parse_mapping,
+        help = "Define command mappings in format 'name:path[:description]'. Can be specified multiple times"
+    )]
+    command: Vec<CommandMapping>,
+
+    #[arg(
+        short, 
+        long,
+        help = "The name of the main command"
+    )]
+    name: String,
+
+    #[arg(
+        short, 
+        long,
+        help = "Description for the main command"
+    )]
+    description: Option<String>,
+
+    #[arg(
+        short, 
+        long,
+        help = "Author information for the main command"
+    )]
+    author: Option<String>,
+
+    #[arg(
+        short = 'b', 
+        long,
+        help = "About information for the main command (similar to description)"
+    )]
+    about: Option<String>,
+
+    #[arg(
+        last = true,
+        help = "Arguments passed to the main command"
+    )]
+    trailing: Vec<String>,
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Rebuilds the Nix environment
-    Rebuild {
-        /// Specify the flake path to rebuild
-        #[arg(long, env = "NIXOS_CONFIG")]
-        path: PathBuf,
-        #[arg(long, env = "NIXOS_HOST")]
-        host: String,
-        #[arg(short, long)]
-        label: Option<String>,
-        message: String,
-    },
-    /// Updates the Nix environment
-    Update {
-        /// Specify the flake path to update
-        #[arg(long, env = "NIXOS_CONFIG")]
-        path: PathBuf,
-        #[arg(long, env = "NIXOS_HOST")]
-        host: String,
-        input: Option<String>,
-    },
-    /// Syncs the Nix environment with the Repo
-    Sync {
-        /// Specify the flake path to update
-        #[arg(long, env = "NIXOS_CONFIG")]
-        path: PathBuf,
-        #[arg(long, env = "NIXOS_HOST")]
-        host: String,
-    },
-    /// Test the Nix environment
-    Test {
-        /// Specify the flake path to test
-        #[arg(long, env = "NIXOS_CONFIG")]
-        path: PathBuf,
-        #[arg(long, env = "NIXOS_HOST")]
-        host: String,
-    },
-    /// Cleans up the Nix environment
-    Clean,
-    /// Audits the Nix environment for issues
-    Audit { key: String },
+
+#[derive(Debug, Clone)]
+struct CommandMapping {
+    name: String,
+    path: String,
+    description: Option<String>,
 }
 
-fn main() {
-    let cli = Cli::parse();
-
-    match &cli.command {
-        Commands::Rebuild {
-            path,
-            host,
-            label,
-            message,
-        } => {
-            rebuild(path, host, label.as_deref(), message).unwrap();
-        }
-        Commands::Update { path, host, input } => {
-            update(path, host, input.as_deref()).unwrap();
-        }
-        Commands::Sync { path, host } => {
-            sync(path, host).unwrap();
-        }
-        Commands::Test { path, host } => {
-            test(path, host).unwrap();
-        }
-        Commands::Audit { key } => {
-            audit(key).unwrap();
-        }
-        Commands::Clean {} => clean().unwrap(),
+fn parse_mapping(s: &str) -> Result<CommandMapping, String> {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    if parts.len() < 2 {
+        return Err("Mapping must be at least name:path".into());
     }
-}
 
-fn rebuild(
-    nixos_path: &Path,
-    host: &str,
-    label: Option<&str>,
-    message: &str,
-) -> anyhow::Result<()> {
-    let nixos_path = nixos_path.resolve();
-    let label = label.unwrap_or(message);
-    let sanitized_label = sanitize_label(label);
-
-    println!("path: {:?}", nixos_path);
-    println!("host: {:?}", host);
-    println!("message: {:?}", message);
-    println!("label: {:?}", sanitized_label);
-
-    let mut command = script_command("rebuild");
-    command
-        .arg(nixos_path.as_ref())
-        .arg(host)
-        .arg(message)
-        .arg(sanitized_label)
-        .status()?;
-
-    Ok(())
-}
-
-fn update(nixos_path: &Path, host: &str, input: Option<&str>) -> anyhow::Result<()> {
-    let nixos_path = nixos_path.resolve();
-
-    let mut command = script_command("update");
-    command.arg(nixos_path.as_ref());
-    if let Some(input) = input {
-        command.arg(input);
-    }
-    command.status()?;
-
-    let message = if let Some(input) = input {
-        format!("update {}", input)
+    let description = if parts.len() == 3 {
+        Some(parts[2].to_string())
     } else {
-        "update".to_string()
+        None
     };
 
-    rebuild(nixos_path.as_ref(), host, None, &message)?;
+    Ok(CommandMapping {
+        name: parts[0].to_string(),
+        path: parts[1].to_string(),
+        description,
+    })
+}
 
+macro_rules! optional {
+    ($cmd:ident, $cli:ident, $option:ident) => {
+        if let Some($option) = $cli.$option {
+            $cmd = $cmd.about($option);
+        }
+    };
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    let mut cmd = Command::new(&cli.name);
+
+    optional!(cmd, cli, description);
+    optional!(cmd, cli, author);
+    optional!(cmd, cli, about);
+
+    for mapping in cli.command.clone() {
+        let mut subcmd = Command::new(mapping.name);
+        if let Some(desc) = &mapping.description {
+            subcmd = subcmd.about(desc);
+        }
+        cmd = cmd.subcommand(subcmd);
+    }
+
+    let mut args = cli.trailing;
+    args.insert(0, cli.name);
+
+    let matches = cmd.get_matches_from(args);
+    if let Some((sub_name, _sub_matches)) = matches.subcommand() {
+        if let Some(mapping) = cli.command.iter().find(|m| m.name == sub_name) {
+            let error = ProcCommand::new(&mapping.path).exec();
+            return Err(error.into());
+        }
+    }
     Ok(())
-}
-
-fn sync(nixos_path: &Path, host: &str) -> anyhow::Result<()> {
-    let nixos_path = nixos_path.resolve();
-
-    let mut command = script_command("sync");
-    command.arg(nixos_path.as_ref()).arg(host).status()?;
-
-    Ok(())
-}
-
-fn test(nixos_path: &Path, host: &str) -> anyhow::Result<()> {
-    let nixos_path = nixos_path.resolve();
-
-    let mut command = script_command("test");
-    command.arg(nixos_path.as_ref()).arg(host).status()?;
-
-    Ok(())
-}
-
-fn clean() -> anyhow::Result<()> {
-    let mut command = script_command("clean");
-    command.status()?;
-
-    Ok(())
-}
-
-fn audit(key: &str) -> anyhow::Result<()> {
-    let mut command = script_command("audit");
-    command.arg(key).status()?;
-
-    Ok(())
-}
-
-fn sanitize_label(input: &str) -> String {
-    input
-        .chars()
-        .filter_map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | ':' | '_' | '.' | '-' => Some(c),
-            ' ' => Some('_'),
-            _ => None,
-        })
-        .collect()
-}
-
-fn script_command(name: &str) -> Command {
-    let script_path = std::option_env!("MY_SCRIPT_PATH")
-        .map(PathBuf::from)
-        .unwrap_or(PathBuf::from(
-            PathBuf::from(std::env!("CARGO_MANIFEST_DIR")).join("scripts"),
-        ));
-
-    let script_path = script_path.join(name).with_extension("sh");
-
-    Command::new(script_path)
 }
